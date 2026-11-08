@@ -1,0 +1,4 @@
+# Archivos compilados (se regeneran con los scripts build-*.sh)
+nativo/build/
+nativo/ps4/eboot.bin
+.DS_Store
