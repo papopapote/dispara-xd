@@ -138,15 +138,20 @@ cv.addEventListener('touchstart', e => {
   e.preventDefault(); SFX.init();
   if (state !== 'play') { menuTap(tp(e.touches[0])); return; }
   if (paused) { paused = false; return; }   // toque para seguir tras volver a la app
+  if (inBtn(tp(e.changedTouches[0]), GAME_BTN)){ tapSound(); if (e.touches.length === 1) return; }
   const p = tp(e.touches[0]); touch.on = true; touch.x = p.x; touch.y = p.y; touch.two = e.touches.length > 1;
 }, { passive:false });
 cv.addEventListener('touchmove', e => { e.preventDefault(); const p = tp(e.touches[0]); touch.x = p.x; touch.y = p.y; touch.two = e.touches.length > 1; }, { passive:false });
 cv.addEventListener('touchend', e => { SFX.init(); touch.on = e.touches.length > 0; touch.two = e.touches.length > 1; });
-cv.addEventListener('mousedown', e => { SFX.init(); if (state !== 'play') menuTap(tp(e)); });
-const OPT_Y = 330, SND_BTN = { x:W-34, y:34, r:28 };
+cv.addEventListener('mousedown', e => { SFX.init(); if (state !== 'play') menuTap(tp(e)); else if (inBtn(tp(e), GAME_BTN)) tapSound(); });
+// Botón de sonido: grande en el menú, chiquito durante el juego (bajo el récord).
+const OPT_Y = 330, MENU_BTN = { x:W-92, y:34, w:156, h:38 }, GAME_BTN = { x:W-64, y:88, w:110, h:26 };
+const inBtn = (p, b) => Math.abs(p.x-b.x) < b.w/2 + 8 && Math.abs(p.y-b.y) < b.h/2 + 8;
+function tapSound(){ SFX.toggle(); SFX.select(); sndPop = 0.25; }
+let sndPop = 0;
 function menuTap(p){
   if (state === 'menu'){
-    if (Math.hypot(p.x-SND_BTN.x, p.y-SND_BTN.y) < SND_BTN.r + 10){ SFX.toggle(); SFX.select(); return; }
+    if (inBtn(p, MENU_BTN)){ tapSound(); return; }
     for (let i=0;i<3;i++) if (Math.abs(p.y-(OPT_Y+i*58)) < 26 && Math.abs(p.x-W/2) < 150){ dsel = i; start(); }
   } else state = 'menu';
 }
@@ -312,7 +317,7 @@ function update(dt){
   bgT += dt;
   for (const i of islands){ i.y += 40*dt; if (i.y - i.r*1.3 > H) Object.assign(i, newIsland()); }
   for (const c of clouds){ c.y += c.v*dt; if (c.y - 70*c.s > H) Object.assign(c, newCloud()); }
-  shake = Math.max(0, shake - 30*dt);
+  shake = Math.max(0, shake - 30*dt); sndPop -= dt;
   if (state === 'menu') return;
 
   if (state === 'play'){
@@ -583,20 +588,36 @@ function draw(){
   drawHUD();
 }
 
-// botón de sonido del menú: parlante dibujado (sin emojis, se ve igual en todos lados)
-function drawSoundBtn(){
-  const { x, y, r } = SND_BTN, on = SFX.on;
-  ctx.save(); ol(2.5);
-  ctx.fillStyle = on ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.35)';
-  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#fff'; ctx.beginPath();
-  ctx.moveTo(x-14, y-6); ctx.lineTo(x-7, y-6); ctx.lineTo(x+2, y-14); ctx.lineTo(x+2, y+14); ctx.lineTo(x-7, y+6); ctx.lineTo(x-14, y+6);
-  ctx.closePath(); ctx.fill(); ctx.stroke();
-  ctx.strokeStyle = on ? '#fff' : '#ff4b6e'; ctx.lineWidth = 3;
-  if (on){ for (const k of [7, 13]){ ctx.beginPath(); ctx.arc(x+2, y, k, -0.8, 0.8); ctx.stroke(); } }
-  else { ctx.beginPath(); ctx.moveTo(x+7, y-7); ctx.lineTo(x+17, y+7); ctx.moveTo(x+17, y-7); ctx.lineTo(x+7, y+7); ctx.stroke(); }
+// Botón de sonido divertido: carita que canta (con sonido) o duerme con la boca cerrada (sin sonido).
+// El texto dice lo que hace al tocarlo.
+function drawSoundBtn(b){
+  const on = SFX.on, k = b.h / 38, r = b.h * 0.36, fx = -b.w/2 + b.h/2;
+  const pop = 1 + Math.max(0, sndPop) * 1.2;
+  ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(Math.sin(bgT * (on ? 5 : 1.5)) * (on ? 0.06 : 0.03)); ctx.scale(pop, pop);
+  ol(2.5 * k); ctx.fillStyle = on ? '#ff6a3d' : '#5c677d'; rr(-b.w/2, -b.h/2, b.w, b.h, b.h/2);
+  // carita
+  const bob = on ? Math.sin(bgT * 10) * 1.5 * k : 0;
+  ctx.fillStyle = '#ffe14d'; ol(2 * k); ell(fx, bob, r, r);
+  ctx.fillStyle = '#222'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1.8 * k;
+  if (on){
+    ell(fx - r*0.35, bob - r*0.25, 1.8*k, 2.4*k, 1); ell(fx + r*0.35, bob - r*0.25, 1.8*k, 2.4*k, 1);   // ojos abiertos
+    const m = 2.5 + Math.abs(Math.sin(bgT * 8)) * 3;                                                   // boca cantando
+    ctx.fillStyle = '#c0392b'; ell(fx, bob + r*0.38, 3.2*k, m*k*0.8, 1);
+  } else {
+    for (const s of [-1, 1]){ ctx.beginPath(); ctx.arc(fx + s*r*0.35, -r*0.2, 2.6*k, 0.2, Math.PI-0.2); ctx.stroke(); }  // ojos dormidos
+    ctx.beginPath(); ctx.moveTo(fx - r*0.45, r*0.4); ctx.lineTo(fx + r*0.45, r*0.4); ctx.stroke();                   // boca cerrada
+    for (let i = -1; i <= 1; i++){ ctx.beginPath(); ctx.moveTo(fx + i*r*0.25, r*0.28); ctx.lineTo(fx + i*r*0.25, r*0.52); ctx.stroke(); }  // cierre
+  }
+  // notitas flotando o zZ
+  ctx.font = `900 ${Math.round(13*k)}px "Arial Black", sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (let i = 0; i < 2; i++){
+    const ph = (bgT * (on ? 1.2 : 0.6) + i * 0.5) % 1;
+    ctx.globalAlpha = 1 - ph; ctx.fillStyle = on ? '#fff' : '#cfe8ff';
+    ctx.fillText(on ? (i ? '♫' : '♪') : (i ? 'Z' : 'z'), fx + r*0.9 + ph*8*k, -r*0.6 - ph*14*k);
+  }
+  ctx.globalAlpha = 1;
+  outlinedText(on ? 'SIN SONIDO' : 'CON SONIDO', fx + r + (b.w/2 - fx - r) / 2 + 1, 1, Math.round(13 * k), '#fff');
   ctx.restore();
-  outlinedText(on ? 'SONIDO' : 'MUDO', x, y+r+12, 10, '#fff');
 }
 
 function drawHUD(){
@@ -617,7 +638,7 @@ function drawHUD(){
       .forEach((l,i) => outlinedText(l, W/2, 520 + i*24, 14, '#fff'));
     outlinedText(LEVELS.length + ' niveles · un zepelín jefe al final de cada uno', W/2, 652, 14, '#8fd6ff');
     outlinedText('Récord (' + DIFFS[dsel].n + '): ' + getBest(dsel), W/2, 685, 18, '#ffe14d');
-    drawSoundBtn();
+    drawSoundBtn(MENU_BTN);
     return;
   }
   outlinedText(String(score).padStart(7,'0'), 12, 24, 20, '#fff', 'left');
@@ -627,6 +648,7 @@ function drawHUD(){
   outlinedText('♥'.repeat(Math.max(0,P.lives)), 12, H-22, 22, '#ff4b6e', 'left');
   outlinedText('MISILES x' + P.mis, W-12, H-22, 16, '#8fd6ff', 'right');
   outlinedText('ARMA ' + '▮'.repeat(P.gun), W/2, H-22, 14, '#ffe14d');
+  if (state === 'play') drawSoundBtn(GAME_BTN);
   if (boss){
     ctx.fillStyle = '#222'; ctx.fillRect(W/2-122, 54, 244, 14);
     ctx.fillStyle = '#ff2e63'; ctx.fillRect(W/2-120, 56, 240*Math.max(0,boss.hp/boss.maxhp), 10);
