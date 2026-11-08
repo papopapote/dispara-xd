@@ -27,15 +27,105 @@
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const W = cv.width, H = cv.height, TAU = Math.PI * 2;
 
+// ---------- Sonido (sintetizado con Web Audio, sin archivos) ----------
+// En iPhone el audio sólo puede arrancar dentro de un toque: SFX.init() se llama en cada toque/tecla.
+const SFX = (() => {
+  let ac = null, master, musBus, noiseBuf, on = localStorage.getItem('nube_snd') !== '0';
+  const last = {}, mtof = m => 440 * 2 ** ((m - 69) / 12);
+  function init(){
+    if (ac){ if (ac.state !== 'running') ac.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    ac = new AC();
+    const comp = ac.createDynamicsCompressor(); comp.connect(ac.destination);
+    master = ac.createGain(); master.gain.value = on ? 0.6 : 0; master.connect(comp);
+    musBus = ac.createGain(); musBus.gain.value = 0.55; musBus.connect(master);
+    noiseBuf = ac.createBuffer(1, ac.sampleRate, ac.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const s = ac.createBufferSource(); s.buffer = ac.createBuffer(1, 1, 22050); s.connect(ac.destination); s.start(0); // desbloqueo iOS
+    ac.resume();
+    setInterval(sched, 25);
+  }
+  const ready = () => ac && on && ac.state === 'running';
+  function ok(name, gap){ if (!ready()) return false; const t = ac.currentTime; if (t - (last[name] ?? -9) < gap) return false; last[name] = t; return true; }
+  function tone(type, f0, f1, dur, vol, at = 0, dest = master){
+    const t = at || ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f0, t); if (f1) o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    o.connect(g); g.connect(dest); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function noise(dur, vol, f0, f1, at = 0, ftype = 'lowpass', dest = master){
+    const t = at || ac.currentTime, s = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain();
+    s.buffer = noiseBuf; fl.type = ftype; fl.frequency.setValueAtTime(f0, t); if (f1) fl.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+    s.connect(fl); fl.connect(g); g.connect(dest); s.start(t, Math.random() * 0.5); s.stop(t + dur + 0.02);
+  }
+  const seq = (type, notes, step, len, vol) => { const t = ac.currentTime; notes.forEach((m, i) => tone(type, mtof(m), 0, len, vol, t + i * step)); };
+  const laugh = (n, f, vol) => { const t = ac.currentTime; for (let i = 0; i < n; i++) tone('square', f * (1 - i * 0.06), f * 1.5 * (1 - i * 0.06), 0.08, vol, t + i * 0.11); };
+
+  // Música: progresión Am–F–C–G, transpuesta por nivel; más rápida con el jefe; suave en el menú.
+  let mKind = null, step = 0, nextT = 0;
+  const PROG = [[57, 60, 64], [53, 57, 60], [48, 52, 55], [55, 59, 62]], TR = [0, 2, -2, 3, -3];
+  function sched(){
+    const kind = !on ? null : state === 'menu' ? 'menu' : state === 'play' && !paused ? (boss ? 'boss' : 'level') : null;
+    if (kind !== mKind){ mKind = kind; step = 0; nextT = ac.currentTime + 0.05; }
+    if (!mKind || ac.state !== 'running') return;
+    const bpm = mKind === 'boss' ? 170 : mKind === 'menu' ? 96 : 138, spb = 60 / bpm / 4, tr = mKind === 'menu' ? 0 : TR[level - 1] || 0;
+    if (nextT < ac.currentTime) nextT = ac.currentTime + 0.02;
+    while (nextT < ac.currentTime + 0.12){
+      const ch = PROG[Math.floor(step / 16) % 4].map(m => m + tr), s = step % 16;
+      if (mKind === 'menu'){
+        if (s % 2 === 0) tone('triangle', mtof(ch[(s >> 1) % 3] + 12), 0, spb * 1.8, 0.06, nextT, musBus);
+        if (s === 0) tone('sine', mtof(ch[0] - 12), 0, spb * 14, 0.12, nextT, musBus);
+      } else {
+        if (s % 2 === 0) tone('triangle', mtof(ch[0] - 12 + (s % 4 === 2 ? 12 : 0)), 0, spb * 1.6, 0.16, nextT, musBus);
+        if (s % 2 === 1 || mKind === 'boss') tone('square', mtof(ch[(s >> 1) % 3] + 12), 0, spb * 0.9, 0.025, nextT, musBus);
+        if (s % 4 === 0) tone('sine', 150, 40, 0.12, 0.3, nextT, musBus);
+        if (s % 8 === 4) noise(0.1, 0.12, 4000, 1500, nextT, 'highpass', musBus);
+        if (mKind === 'boss' && s % 2 === 1) noise(0.03, 0.05, 8000, 0, nextT, 'highpass', musBus);
+      }
+      nextT += spb; step++;
+    }
+  }
+
+  return {
+    init,
+    get on(){ return on; },
+    toggle(){ on = !on; try { localStorage.setItem('nube_snd', on ? '1' : '0'); } catch(e){}
+      if (ac) master.gain.setTargetAtTime(on ? 0.6 : 0, ac.currentTime, 0.02); },
+    suspend(){ if (ac) ac.suspend(); },
+    shot(){ if (ok('shot', 0.07)) tone('square', 1100, 450, 0.05, 0.035); },
+    missile(){ if (ok('mis', 0.1)){ noise(0.4, 0.2, 600, 3500, 0, 'bandpass'); tone('sawtooth', 180, 520, 0.3, 0.04); } },
+    pop(big){ if (ok('pop', 0.04)){ noise(big ? 0.45 : 0.14, big ? 0.4 : 0.22, big ? 1500 : 3000, 200); laugh(big ? 3 : 2, big ? 520 : 780, 0.06); } },
+    ding(){ if (ok('ding', 0.06)) tone('triangle', 1500, 1000, 0.04, 0.05); },
+    boom(s = 1){ if (ok('boom', 0.08)){ noise(0.9 * s, 0.5 * s, 1200, 60); tone('sine', 120, 35, 0.6 * s, 0.4 * s); } },
+    bossDown(){ if (ok('bd', 1)){ noise(2, 0.6, 1500, 40); tone('sine', 90, 25, 1.6, 0.5); setTimeout(() => ready() && laugh(7, 420, 0.09), 500); } },
+    hurt(){ if (ok('hurt', 0.2)){ tone('sawtooth', 620, 80, 0.45, 0.16); noise(0.4, 0.3, 2000, 200); } },
+    power(){ if (ok('pw', 0.05)) seq('square', [72, 76, 79, 84], 0.06, 0.09, 0.06); },
+    alert(){ if (ok('alert', 1)){ const t = ac.currentTime; for (let i = 0; i < 4; i++) tone('sawtooth', 440, 880, 0.26, 0.07, t + i * 0.3); } },
+    level(){ if (ok('lvl', 0.5)) seq('triangle', [60, 64, 67, 72, 67, 72], 0.1, 0.18, 0.14); },
+    over(){ if (ok('over', 1)) seq('triangle', [67, 64, 60, 55, 48], 0.22, 0.35, 0.16); },
+    win(){ if (ok('win', 1)) seq('square', [60, 64, 67, 72, 76, 79, 84, 84, 84], 0.12, 0.2, 0.07); },
+    select(){ if (ok('sel', 0.05)) tone('square', 660, 990, 0.07, 0.06); },
+  };
+})();
+// Al salir de la app (cambiar de app, bloquear el teléfono): pausa el juego y el audio.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden){ if (state === 'play') paused = true; SFX.suspend(); }
+});
+
 // ---------- Entrada ----------
 const keys = {};
 addEventListener('keydown', e => {
+  SFX.init();
   keys[e.code] = true;
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if (e.code === 'KeyM' && !e.repeat) SFX.toggle();
   if (state === 'menu'){
+    const prev = dsel;
     if (e.code === 'ArrowUp' || e.code === 'KeyW') dsel = (dsel+2) % 3;
     if (e.code === 'ArrowDown' || e.code === 'KeyS') dsel = (dsel+1) % 3;
     if (['Digit1','Digit2','Digit3'].includes(e.code)) dsel = +e.code.slice(5) - 1;
+    if (dsel !== prev) SFX.select();
     if (e.code === 'Enter' || e.code === 'Space') start();
   } else if (e.code === 'Enter' && state !== 'play') state = 'menu';
   if (e.code === 'KeyP' && state === 'play') paused = !paused;
@@ -45,16 +135,18 @@ addEventListener('keyup', e => keys[e.code] = false);
 const touch = { on:false, two:false, x:0, y:0 };
 function tp(t){ const r = cv.getBoundingClientRect(); return { x:(t.clientX-r.left)*W/r.width, y:(t.clientY-r.top)*H/r.height }; }
 cv.addEventListener('touchstart', e => {
-  e.preventDefault();
+  e.preventDefault(); SFX.init();
   if (state !== 'play') { menuTap(tp(e.touches[0])); return; }
+  if (paused) { paused = false; return; }   // toque para seguir tras volver a la app
   const p = tp(e.touches[0]); touch.on = true; touch.x = p.x; touch.y = p.y; touch.two = e.touches.length > 1;
 }, { passive:false });
 cv.addEventListener('touchmove', e => { e.preventDefault(); const p = tp(e.touches[0]); touch.x = p.x; touch.y = p.y; touch.two = e.touches.length > 1; }, { passive:false });
-cv.addEventListener('touchend', e => { touch.on = e.touches.length > 0; touch.two = e.touches.length > 1; });
-cv.addEventListener('mousedown', e => { if (state !== 'play') menuTap(tp(e)); });
-const OPT_Y = 330;
+cv.addEventListener('touchend', e => { SFX.init(); touch.on = e.touches.length > 0; touch.two = e.touches.length > 1; });
+cv.addEventListener('mousedown', e => { SFX.init(); if (state !== 'play') menuTap(tp(e)); });
+const OPT_Y = 330, SND_BTN = { x:W-34, y:34, r:28 };
 function menuTap(p){
   if (state === 'menu'){
+    if (Math.hypot(p.x-SND_BTN.x, p.y-SND_BTN.y) < SND_BTN.r + 10){ SFX.toggle(); SFX.select(); return; }
     for (let i=0;i<3;i++) if (Math.abs(p.y-(OPT_Y+i*58)) < 26 && Math.abs(p.x-W/2) < 150){ dsel = i; start(); }
   } else state = 'menu';
 }
@@ -77,7 +169,7 @@ const LEVELS = [
   { name:'Tormenta nocturna', sea:'#1d3557', sand:'#5c677d', land:'#2f4a3a', dot:'#1b2e24', cloud:'rgba(150,160,190,.6)',  boss:'#9d0208', dur:75, storm:true },
 ];
 const theme = () => LEVELS[state === 'menu' ? 0 : level-1];
-const levelBanner = () => { texts.push({ x:W/2, y:H/2-20, s:'NIVEL ' + level, t:0, life:2.5, size:42 }, { x:W/2, y:H/2+30, s:LEVELS[level-1].name, t:0, life:2.5, size:24 }); };
+const levelBanner = () => { SFX.level(); texts.push({ x:W/2, y:H/2-20, s:'NIVEL ' + level, t:0, life:2.5, size:42 }, { x:W/2, y:H/2+30, s:LEVELS[level-1].name, t:0, life:2.5, size:24 }); };
 let P, pb = [], eb = [], en = [], fx = [], pu = [], texts = [], islands = [], clouds = [];
 
 const DEF = {
@@ -128,18 +220,19 @@ function spawnBoss(){
   boss = mk('boss', W/2, -120, {});
   en.push(boss);
   texts.push({ x:W/2, y:H/2, s:'¡ALERTA: ZEPELÍN!', t:0, life:2, size:30 });
+  SFX.alert();
 }
 
 // ---------- Disparos ----------
 function fireGun(){
-  P.fcd = 0.11;
+  P.fcd = 0.11; SFX.shot();
   const shot = (x,a) => pb.push({ x:P.x+x, y:P.y-24, vx:Math.sin(a)*620, vy:-Math.cos(a)*620, r:4, dmg:1, k:'b' });
   shot(-7,0); shot(7,0);
   if (P.gun >= 2){ shot(-12,-0.15); shot(12,0.15); }
   if (P.gun >= 3){ shot(-16,-0.32); shot(16,0.32); }
 }
 function fireMissile(){
-  P.mcd = 0.5; P.mis--;
+  P.mcd = 0.5; P.mis--; SFX.missile();
   for (const s of [-1,1]) pb.push({ x:P.x+s*16, y:P.y, vx:s*140, vy:-120, r:6, dmg:8, k:'m', t:0 });
 }
 const shoot = (x,y,a,s) => (s *= D.bspd, eb.push({ x, y, vx:Math.cos(a)*s, vy:Math.sin(a)*s, r:5 }));
@@ -183,11 +276,13 @@ function killEnemy(e){
   e.dead = true; score += e.sc;
   if (e.type === 'boss'){
     for (let i=0;i<6;i++) boom(e.x+rnd(-70,70), e.y+rnd(-40,40), 45, null);
+    SFX.bossDown();
     texts.push({ x:e.x, y:e.y, s:'xD', t:0, life:1.8, size:120 });
     pu.push({ x:e.x-30, y:e.y, k:'P', t:0 }, { x:e.x+30, y:e.y, k:'V', t:0 }, { x:e.x, y:e.y+20, k:'M', t:0 });
     boss = null; eb.length = 0;
     if (level >= LEVELS.length){
       state = 'win'; en.forEach(o => { if (o !== e) o.dead = true; });
+      setTimeout(SFX.win, 1500);
       if (score > best){ best = score; localStorage.setItem('nube_best_' + dsel, best); }
     } else {
       level++; T = 0; bossT = LEVELS[level-1].dur; spawnT = 3.5;
@@ -195,7 +290,7 @@ function killEnemy(e){
     }
   } else {
     const big = e.type === 'bomber';
-    quickPop(e.x, e.y, big?34:18);
+    quickPop(e.x, e.y, big?34:18); SFX.pop(big);
     texts.push({ x:e.x, y:e.y-6, s:'xD', t:0, life:0.7, size:big?40:28 });
     const ch = big ? 1 : 0.07;
     if (Math.random() < ch){ const r = Math.random(); pu.push({ x:e.x, y:e.y, k: r<0.45?'P': r<0.85?'M':'V', t:0 }); }
@@ -204,9 +299,10 @@ function killEnemy(e){
 function hitPlayer(){
   if (P.inv > 0) return;
   P.lives--; P.inv = 2.5; P.gun = Math.max(1, P.gun-1);
-  boom(P.x, P.y, 30, '¡AUCH!'); eb.length = 0;
+  boom(P.x, P.y, 30, '¡AUCH!'); eb.length = 0; SFX.hurt();
   if (P.lives <= 0){
     boom(P.x, P.y, 50, null); state = 'over';
+    SFX.boom(1.2); setTimeout(SFX.over, 700);
     if (score > best){ best = score; localStorage.setItem('nube_best_' + dsel, best); }
   }
 }
@@ -282,7 +378,7 @@ function update(dt){
       if (e.dead || dist2(b,e) > (b.r+e.r)**2) continue;
       b.dead = true;
       if (b.k === 'm'){
-        boom(b.x, b.y, 22, null);
+        boom(b.x, b.y, 22, null); SFX.boom(0.6);
         for (const o of en) if (!o.dead && dist2(b,o) < (50+o.r)**2){
           if (o.type !== 'boss'){ killEnemy(o); continue; }
           o.hp -= b.dmg; o.flash = 0.08; if (o.hp <= 0) killEnemy(o);
@@ -290,7 +386,7 @@ function update(dt){
       } else {
         if (e.type !== 'boss') killEnemy(e);   // un disparo basta: ¡xD!
         else {
-          e.hp -= b.dmg; e.flash = 0.06;
+          e.hp -= b.dmg; e.flash = 0.06; SFX.ding();
           fx.push({ k:'puff', x:b.x, y:b.y, vx:0, vy:-40, r:4, t:0, life:0.15, c:'#fff' });
           if (Math.random() < 0.08) texts.push({ x:b.x+rnd(-40,40), y:b.y, s:'xD', t:0, life:0.6, size:36 });
           if (e.hp <= 0) killEnemy(e);
@@ -319,7 +415,7 @@ function update(dt){
     p.t += dt; p.y += 70*dt; p.x += Math.sin(p.t*3)*40*dt;
     if (p.y > H+30) p.dead = true;
     if (state === 'play' && dist2(p,P) < 32*32){
-      p.dead = true;
+      p.dead = true; SFX.power();
       if (p.k === 'P'){ if (P.gun < 3) P.gun++; else score += 1000; texts.push({ x:p.x, y:p.y, s:'¡MÁS PODER!', t:0, life:0.9, size:20 }); }
       if (p.k === 'M'){ P.mis += 4; texts.push({ x:p.x, y:p.y, s:'+4 MISILES', t:0, life:0.9, size:20 }); }
       if (p.k === 'V'){ P.lives = Math.min(5, P.lives+1); texts.push({ x:p.x, y:p.y, s:'+1 VIDA', t:0, life:0.9, size:20 }); }
@@ -487,6 +583,22 @@ function draw(){
   drawHUD();
 }
 
+// botón de sonido del menú: parlante dibujado (sin emojis, se ve igual en todos lados)
+function drawSoundBtn(){
+  const { x, y, r } = SND_BTN, on = SFX.on;
+  ctx.save(); ol(2.5);
+  ctx.fillStyle = on ? 'rgba(255,255,255,.25)' : 'rgba(0,0,0,.35)';
+  ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.beginPath();
+  ctx.moveTo(x-14, y-6); ctx.lineTo(x-7, y-6); ctx.lineTo(x+2, y-14); ctx.lineTo(x+2, y+14); ctx.lineTo(x-7, y+6); ctx.lineTo(x-14, y+6);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = on ? '#fff' : '#ff4b6e'; ctx.lineWidth = 3;
+  if (on){ for (const k of [7, 13]){ ctx.beginPath(); ctx.arc(x+2, y, k, -0.8, 0.8); ctx.stroke(); } }
+  else { ctx.beginPath(); ctx.moveTo(x+7, y-7); ctx.lineTo(x+17, y+7); ctx.moveTo(x+17, y-7); ctx.lineTo(x+7, y+7); ctx.stroke(); }
+  ctx.restore();
+  outlinedText(on ? 'SONIDO' : 'MUDO', x, y+r+12, 10, '#fff');
+}
+
 function drawHUD(){
   if (state === 'menu'){
     ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.fillRect(0,0,W,H);
@@ -500,11 +612,12 @@ function drawHUD(){
       outlinedText((sel ? '▶ ' : '') + d.n, W/2, y-7, 22, d.col);
       outlinedText(d.desc, W/2, y+14, 12, '#fff');
     });
-    ['↑↓ o 1-2-3: elegir · ENTER: jugar', 'Flechas/WASD: mover · P: pausa', 'Z/ESPACIO: ametralladora',
+    ['↑↓ o 1-2-3: elegir · ENTER: jugar', 'Flechas/WASD: mover · P: pausa · M: sonido', 'Z/ESPACIO: ametralladora',
      'X/SHIFT: misiles teledirigidos', 'Táctil: toca una dificultad, arrastra; 2º dedo = misiles']
       .forEach((l,i) => outlinedText(l, W/2, 520 + i*24, 14, '#fff'));
     outlinedText(LEVELS.length + ' niveles · un zepelín jefe al final de cada uno', W/2, 652, 14, '#8fd6ff');
     outlinedText('Récord (' + DIFFS[dsel].n + '): ' + getBest(dsel), W/2, 685, 18, '#ffe14d');
+    drawSoundBtn();
     return;
   }
   outlinedText(String(score).padStart(7,'0'), 12, 24, 20, '#fff', 'left');
@@ -518,7 +631,8 @@ function drawHUD(){
     ctx.fillStyle = '#222'; ctx.fillRect(W/2-122, 54, 244, 14);
     ctx.fillStyle = '#ff2e63'; ctx.fillRect(W/2-120, 56, 240*Math.max(0,boss.hp/boss.maxhp), 10);
   }
-  if (paused){ ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0,0,W,H); outlinedText('PAUSA', W/2, H/2, 48); }
+  if (paused){ ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0,0,W,H); outlinedText('PAUSA', W/2, H/2, 48);
+    outlinedText('toca o P para seguir', W/2, H/2+50, 18, '#fff'); }
   if (state === 'win'){
     ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0,0,W,H);
     outlinedText('¡MISIÓN', W/2, H/2-90, 50, '#7dffb0');
